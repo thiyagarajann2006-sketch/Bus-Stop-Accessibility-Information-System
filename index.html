@@ -1,0 +1,748 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trichy Bus Accessibility Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f3f4f6;
+        }
+        /* Custom scrollbar styling for the content area */
+        #content-area {
+            max-height: calc(100vh - 4rem); /* Full height minus header */
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch; /* For smooth iOS scrolling */
+        }
+        /* Style to ensure the Leaflet map container has a defined height */
+        #map-container, .route-map-container {
+            height: 400px;
+            width: 100%;
+            border-radius: 0.5rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+        }
+        .leaflet-container {
+            border-radius: 0.5rem;
+        }
+        .stop-link:hover .stop-name {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body class="flex h-screen bg-gray-100">
+
+    <div id="mobile-menu-backdrop" class="fixed inset-0 bg-gray-900 bg-opacity-50 z-30 hidden lg:hidden" onclick="toggleMobileMenu()"></div>
+
+    <aside id="sidebar" class="fixed inset-y-0 left-0 z-40 flex flex-col w-64 bg-white shadow-xl transform -translate-x-full lg:translate-x-0 transition-transform duration-300 ease-in-out">
+        <div class="p-6 border-b border-gray-200">
+            <h1 class="text-xl font-bold text-gray-800">Trichy Transit</h1>
+            <p class="text-xs text-green-600 font-semibold">Accessibility Dashboard</p>
+        </div>
+        
+        <nav class="flex-1 p-4 space-y-2">
+            <a href="#" onclick="navigateTo('home')" id="nav-home" class="flex items-center px-4 py-3 text-sm font-medium text-gray-700 rounded-lg hover:bg-gray-100 transition duration-150">
+                <i data-lucide="layout-dashboard" class="w-5 h-5 mr-3"></i>
+                Dashboard Home
+            </a>
+            <a href="#" onclick="navigateTo('routes')" id="nav-routes" class="flex items-center px-4 py-3 text-sm font-medium text-gray-700 rounded-lg hover:bg-gray-100 transition duration-150">
+                <i data-lucide="route" class="w-5 h-5 mr-3"></i>
+                Bus Routes
+            </a>
+            <a href="#" onclick="navigateTo('map')" id="nav-map" class="flex items-center px-4 py-3 text-sm font-medium text-gray-700 rounded-lg hover:bg-gray-100 transition duration-150">
+                <i data-lucide="map" class="w-5 h-5 mr-3"></i>
+                City Map View
+            </a>
+        </nav>
+    </aside>
+
+    <div class="flex-1 lg:ml-64 flex flex-col overflow-hidden">
+        
+        <header class="bg-white shadow-md p-4 flex items-center justify-between sticky top-0 z-10">
+            <h2 id="page-title" class="text-xl font-semibold text-gray-800">Dashboard Home</h2>
+            <button id="mobile-menu-button" class="lg:hidden p-2 rounded-lg text-gray-600 hover:bg-gray-100 focus:outline-none" onclick="toggleMobileMenu()">
+                <i data-lucide="menu" class="w-6 h-6"></i>
+            </button>
+        </header>
+
+        <main id="content-area" class="flex-1 p-4 sm:p-6 bg-gray-50">
+            </main>
+        
+    </div>
+
+    <div id="custom-alert" class="fixed top-0 left-1/2 transform -translate-x-1/2 mt-4 p-4 bg-red-500 text-white rounded-lg shadow-xl z-50 transition-opacity duration-300 hidden" role="alert">
+        <p id="alert-message"></p>
+    </div>
+
+<script>
+    // --- UTILITIES AND DATA ---
+
+    let currentPage = 'home';
+    let currentRouteId = null;
+    let currentStopId = null;
+    let currentMapCenter = null;
+    let currentMapZoom = 13;
+    let mapInstance = null;
+    let mapReturnPage = 'routes'; // To track where to return from the map view
+    let navigationHistory = []; // **NEW: Navigation history stack**
+
+    // Helper for custom alerts
+    function alertBox(message) {
+        const alertEl = document.getElementById('custom-alert');
+        const messageEl = document.getElementById('alert-message');
+        messageEl.textContent = message;
+        alertEl.classList.remove('hidden');
+        alertEl.style.opacity = '1';
+        setTimeout(() => {
+            alertEl.style.opacity = '0';
+            setTimeout(() => {
+                alertEl.classList.add('hidden');
+            }, 300);
+        }, 3000);
+    }
+
+    // Coordinates for all main stops (Latitude, Longitude)
+    // Note: Some coordinates are mock/approximate for demonstration purposes
+    const stopCoordinates = {
+        'Kalaingar Bus Stand': { lat: 10.755506, lon: 78.655837 }, // Updated to final location
+        'Mannarpuram': { lat: 10.785147, lon: 78.686916 },
+        'Central Bus Stand': { lat: 10.798032, lon: 78.681000 },
+        'Railway Junction': { lat: 10.795577, lon: 78.684085 },
+        'RC School': { lat: 10.798984, lon: 78.686892 },
+        'Head Post Office': { lat: 10.800900, lon: 78.689240 },
+        'Melapudur': { lat: 10.803343, lon: 78.692157 },
+        'Bheema Nagar': { lat: 10.808597, lon: 78.690441 },
+        'Pallakarai': { lat: 10.810902, lon: 78.696150 },
+        'Gandhi Market': { lat: 10.816060, lon: 78.695993 },
+        'Marakadai': { lat: 10.816689, lon: 78.693032 },
+        'Raja Theatre': { lat: 10.820984, lon: 78.692777 },
+        'Singarathoppu': { lat: 10.823727, lon: 78.692894 },
+        'Teppakulam': { lat: 10.827182, lon: 78.693050 },
+        'Chathiram Bus Stand': { lat: 10.831981, lon: 78.693226 },
+        // New stops for Route 1 & 2
+        'John Vestry School': { lat: 10.804987, lon: 78.678964 },
+        'Court': { lat: 10.807748, lon: 78.682369 },
+        'Maruthi hospital': { lat: 10.810380, lon: 78.679506 },
+        'Government hospital': { lat: 10.811649, lon: 78.678970 },
+        'Puthur Naal Road': { lat: 10.815630, lon: 78.677494 },
+        'Puthur Agrharam': { lat: 10.818430, lon: 78.676589 },
+        'Ramalinga Nagar': { lat: 10.819914, lon: 78.676522 },
+        'khoraathoor': { lat: 10.821783, lon: 78.676582 },
+        'CSI Hospital': { lat: 10.823247, lon: 78.674852 },
+        'Woraiyur Vekkalaiamman Kovil': { lat: 10.827080, lon: 78.674035 },
+        'Salai road': { lat: 10.827691, lon: 78.674852 },
+        'Rukmani stop': { lat: 10.827423, lon: 78.679520 },
+        'Jayanthi Stop': { lat: 10.827285, lon: 78.682306 },
+        'koyaanur stop': { lat: 10.827081, lon: 78.685496 },
+        // Route 2 Specific Stops
+        'Sevasangam school': { lat: 10.802962, lon: 78.685176 },
+        'American Hospital': { lat: 10.804741, lon: 78.686402 },
+        'cauvery hospital': { lat: 10.816680, lon: 78.681017 },
+        'thillai nagar 11,10th cross': { lat: 10.818952, lon: 78.683440 },
+        'thillai nagar 9,8,7th cross': { lat: 10.822482, lon: 78.683341 },
+        'Thillai nagar 6,5,4th cross': { lat: 10.823392, lon: 78.683347 },
+        'Thillai nagar 3,2,1st cross': { lat: 10.826242, lon: 78.683427 },
+        // Route 4 Specific Stops
+        'Mambala Salai': { lat: 10.844373, lon: 78.697737 },
+        'Thiruvanaikovil': { lat: 10.852420, lon: 78.700432 },
+        'Check post': { lat: 10.862550, lon: 78.703714 },
+        'periyar nagar bus stop': { lat: 10.847458, lon: 78.698852 },
+        'Ganapathi Nagar stop': { lat: 10.8550, lon: 78.7150 },
+        'devi theatre bus stop': { lat: 10.8600, lon: 78.7200 },
+        'RPN Office': { lat: 10.8650, lon: 78.7250 },
+        'Srirangam bus stop': { lat: 10.862343, lon: 78.690994 },
+        // Route 6 Specific Stops
+        'Warehouse': { lat: 10.806027, lon: 78.694844 },
+        'Arabic college': { lat: 10.781578, lon: 78.689045 },
+        'Khajamalai colony': { lat: 10.778130, lon: 78.687182 },
+        'Indian bank colony': { lat: 10.774443, lon: 78.685067 },
+        'Simco Meter': { lat: 10.772464, lon: 78.684789 },
+        'Sundar nagar': { lat: 10.769202, lon: 78.684176 },
+        'Hostel stop': { lat: 10.765157, lon: 78.683445 },
+        'Lic colony': { lat: 10.760456, lon: 78.682101 },
+        'park stop': { lat: 10.757282, lon: 78.689723 },
+        'KK nagar bus stand': { lat: 10.757304, lon: 78.692016 },
+        'Anbi nagar stop': { lat: 10.7350, lon: 78.7450 },
+        'star nagar stop': { lat: 10.7300, lon: 78.7500 },
+        'Olaiyur': { lat: 10.713764, lon: 78.683168 },
+    };
+    // Base mock data for all stops (Accessibility Scores: 1-5, 5 being best)
+    const allStopBases = {
+        'Kalaingar Bus Stand': { id: 's01', score: 4.8, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Kalaingar+Bus+Stand', type: 'Bus Terminus' },
+        'Mannarpuram': { id: 's02', score: 3.5, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Mannarpuram+Stop', type: 'Main Stop' },
+        'Central Bus Stand': { id: 's03', score: 4.5, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Central+Bus+Stand', type: 'Major Junction' },
+        'Railway Junction': { id: 's04', score: 4.1, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Railway+Junction+Stop', type: 'Transport Hub' },
+        'RC School': { id: 's05', score: 3.2, ramp: false, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=RC+School+Stop', type: 'Standard Stop' },
+        'Head Post Office': { id: 's06', score: 3.8, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Head+Post+Office+Stop', type: 'Standard Stop' },
+        'Melapudur': { id: 's07', score: 2.9, ramp: false, shelter: true, seating: false, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Melapudur+Stop', type: 'Standard Stop' },
+        'Bheema Nagar': { id: 's08', score: 3.0, ramp: true, shelter: false, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Bheema+Nagar+Stop', type: 'Standard Stop' },
+        'Pallakarai': { id: 's09', score: 4.0, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Pallakarai+Stop', type: 'Standard Stop' },
+        'Gandhi Market': { id: 's10', score: 3.7, ramp: true, shelter: true, seating: true, signage: false, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Gandhi+Market+Stop', type: 'Market Stop' },
+        'Marakadai': { id: 's11', score: 2.5, ramp: false, shelter: false, seating: false, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Marakadai+Stop', type: 'Standard Stop' },
+        'Raja Theatre': { id: 's12', score: 3.3, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Raja+Theatre+Stop', type: 'Standard Stop' },
+        'Singarathoppu': { id: 's13', score: 3.1, ramp: false, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Singarathoppu+Stop', type: 'Standard Stop' },
+        'Teppakulam': { id: 's14', score: 4.3, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Teppakulam+Stop', type: 'Standard Stop' },
+        'Chathiram Bus Stand': { id: 's15', score: 4.9, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Chathiram+Bus+Stand', type: 'Bus Terminus' },
+        'John Vestry School': { id: 's16', score: 3.0, ramp: false, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=John+Vestry+School', type: 'Standard Stop' },
+        'Court': { id: 's17', score: 4.2, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Court+Stop', type: 'Standard Stop' },
+        'Maruthi hospital': { id: 's18', score: 3.4, ramp: true, shelter: true, seating: true, signage: false, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Maruthi+Hospital+Stop', type: 'Standard Stop' },
+        'Government hospital': { id: 's19', score: 4.6, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Government+Hospital+Stop', type: 'Hospital Stop' },
+        'Puthur Naal Road': { id: 's20', score: 2.8, ramp: false, shelter: true, seating: false, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Puthur+Naal+Road+Stop', type: 'Standard Stop' },
+        'Puthur Agrharam': { id: 's21', score: 3.9, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Puthur+Agrharam+Stop', type: 'Standard Stop' },
+        'Ramalinga Nagar': { id: 's22', score: 2.7, ramp: false, shelter: false, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Ramalinga+Nagar+Stop', type: 'Standard Stop' },
+        'khoraathoor': { id: 's23', score: 3.6, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Khoraathoor+Stop', type: 'Standard Stop' },
+        'CSI Hospital': { id: 's24', score: 4.0, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=CSI+Hospital+Stop', type: 'Hospital Stop' },
+        'Woraiyur Vekkalaiamman Kovil': { id: 's25', score: 3.2, ramp: true, shelter: true, seating: false, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Woraiyur+Kovil+Stop', type: 'Standard Stop' },
+        'Salai road': { id: 's26', score: 2.6, ramp: false, shelter: true, seating: true, signage: false, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Salai+Road+Stop', type: 'Standard Stop' },
+        'Rukmani stop': { id: 's27', score: 3.0, ramp: true, shelter: false, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Rukmani+Stop', type: 'Standard Stop' },
+        'Jayanthi Stop': { id: 's28', score: 3.1, ramp: false, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Jayanthi+Stop', type: 'Standard Stop' },
+        'koyaanur stop': { id: 's29', score: 3.3, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Koyaanur+Stop', type: 'Standard Stop' },
+        'Sevasangam school': { id: 's30', score: 2.9, ramp: false, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Sevasangam+School+Stop', type: 'Standard Stop' },
+        'American Hospital': { id: 's31', score: 4.4, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=American+Hospital+Stop', type: 'Hospital Stop' },
+        'cauvery hospital': { id: 's32', score: 4.0, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Cauvery+Hospital+Stop', type: 'Hospital Stop' },
+        'thillai nagar 11,10th cross': { id: 's33', score: 3.8, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Thillai+Nagar+11,10+Stop', type: 'Standard Stop' },
+        'thillai nagar 9,8,7th cross': { id: 's34', score: 3.7, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Thillai+Nagar+9,8,7+Stop', type: 'Standard Stop' },
+        'Thillai nagar 6,5,4th cross': { id: 's35', score: 3.6, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Thillai+Nagar+6,5,4+Stop', type: 'Standard Stop' },
+        'Thillai nagar 3,2,1st cross': { id: 's36', score: 3.5, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Thillai+Nagar+3,2,1+Stop', type: 'Standard Stop' },
+        'Mambala Salai': { id: 's37', score: 3.0, ramp: false, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Mambala+Salai+Stop', type: 'Standard Stop' },
+        'Thiruvanaikovil': { id: 's38', score: 4.0, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Thiruvanaikovil+Stop', type: 'Standard Stop' },
+        'Check post': { id: 's39', score: 3.5, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Check+Post+Stop', type: 'Standard Stop' },
+        'periyar nagar bus stop': { id: 's40', score: 2.8, ramp: false, shelter: true, seating: false, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Periyar+Nagar+Stop', type: 'Standard Stop' },
+        'Ganapathi Nagar stop': { id: 's41', score: 3.2, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Ganapathi+Nagar+Stop', type: 'Standard Stop' },
+        'devi theatre bus stop': { id: 's42', score: 3.7, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Devi+Theatre+Stop', type: 'Standard Stop' },
+        'RPN Office': { id: 's43', score: 3.5, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=RPN+Office+Stop', type: 'Standard Stop' },
+        'Srirangam bus stop': { id: 's44', score: 4.5, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Srirangam+Bus+Stop', type: 'Bus Terminus' },
+        'Warehouse': { id: 's45', score: 3.1, ramp: false, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Warehouse+Stop', type: 'Standard Stop' },
+        'Arabic college': { id: 's46', score: 2.5, ramp: false, shelter: false, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Arabic+College+Stop', type: 'Standard Stop' },
+        'Khajamalai colony': { id: 's47', score: 3.0, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Khajamalai+Colony+Stop', type: 'Standard Stop' },
+        'Indian bank colony': { id: 's48', score: 3.3, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Indian+Bank+Colony+Stop', type: 'Standard Stop' },
+        'Simco Meter': { id: 's49', score: 3.6, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Simco+Meter+Stop', type: 'Standard Stop' },
+        'Sundar nagar': { id: 's50', score: 3.9, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Sundar+Nagar+Stop', type: 'Standard Stop' },
+        'Hostel stop': { id: 's51', score: 4.1, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Hostel+Stop', type: 'Standard Stop' },
+        'Lic colony': { id: 's52', score: 4.3, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=LIC+Colony+Stop', type: 'Standard Stop' },
+        'park stop': { id: 's53', score: 4.5, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Park+Stop', type: 'Standard Stop' },
+        'KK nagar bus stand': { id: 's54', score: 4.7, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=KK+Nagar+Bus+Stand', type: 'Bus Terminus' },
+        'Anbi nagar stop': { id: 's55', score: 4.0, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Anbi+Nagar+Stop', type: 'Standard Stop' },
+        'star nagar stop': { id: 's56', score: 3.5, ramp: true, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Star+Nagar+Stop', type: 'Standard Stop' },
+        'Olaiyur': { id: 's57', score: 3.0, ramp: false, shelter: true, seating: true, signage: true, img: 'https://placehold.co/400x200/4ade80/ffffff?text=Olaiyur+Stop', type: 'Standard Stop' },
+    };
+    // --- ROUTE DEFINITIONS ---
+
+    // Route 1: Kalaingar-Chathiram via Woraiyur (18 Stops)
+    const route1StopsData = [
+        'Kalaingar Bus Stand', 'Mannarpuram', 'Central Bus Stand', 'John Vestry School', 'Court',
+        'Maruthi hospital', 'Government hospital', 'Puthur Naal Road', 'Puthur Agrharam',
+        'Ramalinga Nagar', 'khoraathoor', 'CSI Hospital', 'Woraiyur Vekkalaiamman Kovil',
+        'Salai road', 'Rukmani stop', 'Jayanthi Stop', 'koyaanur stop', 'Chathiram Bus Stand'
+    ];
+    // Route 2: Kalaingar-Chathiram via Thillai Nagar (16 Stops)
+    const route2StopsData = [
+        'Kalaingar Bus Stand', 'Mannarpuram', 'Central Bus Stand', 'Sevasangam school', 'American Hospital',
+        'Court', 'Maruthi hospital', 'Government hospital', 'Puthur Naal Road', 'cauvery hospital',
+        'thillai nagar 11,10th cross', 'thillai nagar 9,8,7th cross', 'Thillai nagar 6,5,4th cross',
+        'Thillai nagar 3,2,1st cross', 'koyaanur stop', 'Chathiram Bus Stand'
+    ];
+    // Route 3: Kalaingar - Chathiram via Pallakarai (15 Stops)
+    const route3StopsData = [
+        'Kalaingar Bus Stand', 'Mannarpuram', 'Central Bus Stand', 'Railway Junction', 'RC School',
+        'Head Post Office', 'Melapudur', 'Bheema Nagar', 'Pallakarai', 'Gandhi Market',
+        'Marakadai', 'Raja Theatre', 'Singarathoppu', 'Teppakulam', 'Chathiram Bus Stand'
+    ];
+    // Route 4: Chathiram-Srirangam via Thiruvanaikovil (9 Stops)
+    const route4StopsData = [
+        'Chathiram Bus Stand', 'Mambala Salai', 'Thiruvanaikovil', 'Check post', 'periyar nagar bus stop',
+        'Ganapathi Nagar stop', 'devi theatre bus stop', 'RPN Office', 'Srirangam bus stop'
+    ];
+    // Route 5: Central Bus Stand-KK nagar via LIC colony (Mock Data)
+    const route5StopsData = [
+        'Central Bus Stand', 'Mannarpuram', 'Bheema Nagar', 'Lic colony', 'KK nagar bus stand'
+    ];
+    // Route 6: Chathiram-Olaiyur via KK nagar bus stand (27 Stops)
+    const route6StopsData = [
+        'Chathiram Bus Stand', 'Teppakulam', 'Singarathoppu', 'Raja Theatre', 'Marakadai', 'Gandhi Market',
+        'Pallakarai', 'Warehouse', 'Melapudur', 'Head Post Office', 'RC School', 'Railway Junction',
+        'Central Bus Stand', 'Mannarpuram', 'Arabic college', 'Khajamalai colony', 'Indian bank colony',
+        'Simco Meter', 'Sundar nagar', 'Hostel stop', 'Lic colony', 'park stop', 'KK nagar bus stand',
+        'Anbi nagar stop', 'star nagar stop', 'Olaiyur'
+    ];
+    // Route 7: Chathiram bus stand-udayaanpatti, mullipatti via LIC colony (Mock Data)
+    const route7StopsData = [
+        'Chathiram Bus Stand', 'Teppakulam', 'Lic colony', 'KK nagar bus stand', 'Melapudur'
+    ];
+    const allRoutes = [
+        { id: 'route1', name: 'Route 1', description: 'Kalaingar - Chathiram', via: 'Woraiyur', stops: route1StopsData },
+        { id: 'route2', name: 'Route 2', description: 'Kalaingar - Chathiram', via: 'Thillai Nagar', stops: route2StopsData },
+        { id: 'route3', name: 'Route 3', description: 'Kalaingar - Chathiram', via: 'Pallakarai', stops: route3StopsData },
+        { id: 'route4', name: 'Route 4', description: 'Chathiram - Srirangam', via: 'Thiruvanaikovil', stops: route4StopsData },
+        { id: 'route5', name: 'Route 5', description: 'Central Bus Stand - KK nagar', via: 'LIC colony', stops: route5StopsData },
+        { id: 'route6', name: 'Route 6', description: 'Chathiram - Olaiyur', via: 'KK nagar bus stand', stops: route6StopsData },
+        { id: 'route7', name: 'Route 7', description: 'Chathiram - Udayaanpatti', via: 'LIC colony', stops: route7StopsData },
+    ];
+    // --- NAVIGATION AND UI FUNCTIONS ---
+
+    function toggleMobileMenu() {
+        const sidebar = document.getElementById('sidebar');
+        const backdrop = document.getElementById('mobile-menu-backdrop');
+        const buttonIcon = document.getElementById('mobile-menu-button').querySelector('i');
+
+        if (sidebar.classList.contains('-translate-x-full')) {
+            sidebar.classList.remove('-translate-x-full');
+            backdrop.classList.remove('hidden');
+            if (buttonIcon) {
+                buttonIcon.setAttribute('data-lucide', 'x');
+                lucide.createIcons();
+            }
+        } else {
+            sidebar.classList.add('-translate-x-full');
+            backdrop.classList.add('hidden');
+            if (buttonIcon) {
+                buttonIcon.setAttribute('data-lucide', 'menu');
+                lucide.createIcons();
+            }
+        }
+    }
+
+    function setActiveNav(page) {
+        // Remove active state from all nav links
+        document.querySelectorAll('nav a').forEach(link => {
+            link.classList.remove('bg-green-100', 'text-green-700');
+            link.classList.add('text-gray-700');
+        });
+
+        // Add active state to the current page link
+        const navId = `nav-${page.split('-')[0]}`;
+        const activeLink = document.getElementById(navId);
+        if (activeLink) {
+            activeLink.classList.add('bg-green-100', 'text-green-700');
+            activeLink.classList.remove('text-gray-700');
+        }
+    }
+    
+    // **NEW FUNCTION: Handles navigating back in history**
+    function navigateBack() {
+        if (navigationHistory.length > 0) {
+            const prevState = navigationHistory.pop();
+            // Navigate to the previous state, but disable saving *this* navigation event
+            // to avoid pushing the target page back onto the stack.
+            navigateTo(prevState.page, prevState.routeId, prevState.stopName, false);
+        } else {
+            // Fallback to home if history is empty
+            navigateTo('home', null, null, false); 
+        }
+    }
+
+    // **MODIFIED FUNCTION: Added saveHistory parameter and history logic**
+    function navigateTo(page, routeId = null, stopName = null, saveHistory = true) {
+        
+        // 1. Save current state to history before updating the global variables
+        if (saveHistory && (page !== currentPage || routeId !== currentRouteId || stopName !== currentStopId)) {
+            navigationHistory.push({
+                page: currentPage,
+                routeId: currentRouteId,
+                stopName: currentStopId,
+            });
+             // Keep history manageable
+             if (navigationHistory.length > 10) {
+                navigationHistory.shift();
+            }
+        }
+
+        // 2. Update current state variables
+        if (window.innerWidth < 1024) {
+            toggleMobileMenu();
+        }
+        const contentArea = document.getElementById('content-area');
+        const pageTitleEl = document.getElementById('page-title');
+        
+        // Update global state
+        currentPage = page;
+        currentRouteId = routeId;
+        currentStopId = stopName;
+
+        contentArea.innerHTML = '';
+        mapInstance = null; // Destroy map instance on navigation
+
+        setActiveNav(page);
+
+        switch (page) {
+            case 'home':
+                pageTitleEl.textContent = 'Dashboard Home';
+                contentArea.innerHTML = renderHomeContent();
+                break;
+            case 'routes':
+                pageTitleEl.textContent = 'Bus Routes Overview';
+                contentArea.innerHTML = renderRoutesContent();
+                break;
+            case 'map':
+                pageTitleEl.textContent = 'Trichy City Accessibility Map';
+                contentArea.innerHTML = renderMapContent();
+                setTimeout(() => initializeMap(contentArea, currentMapCenter, currentMapZoom, null, page), 0);
+                break;
+            case 'route-detail':
+                const route = allRoutes.find(r => r.id === routeId);
+                pageTitleEl.innerHTML = `<span class="text-gray-500">Route ${route.name}:</span> ${route.description} <span class="text-sm font-normal text-gray-400">(via ${route.via})</span>`;
+                contentArea.innerHTML = renderRouteDetailContent(route);
+                setTimeout(() => initializeMap(contentArea, null, 13, route), 0); // Initialize map for route
+                break;
+            case 'stop-detail':
+                const stopData = allStopBases[stopName];
+                pageTitleEl.innerHTML = `<span class="text-gray-500">Stop Detail:</span> ${stopName}`;
+                contentArea.innerHTML = renderStopDetail(stopName, stopData, routeId);
+                break;
+            default:
+                pageTitleEl.textContent = 'Page Not Found';
+                contentArea.innerHTML = `<div class="p-6 text-center text-gray-500">The requested page could not be found.</div>`;
+        }
+        lucide.createIcons();
+        contentArea.scrollTop = 0; // Scroll to top on page change
+    }
+
+    // --- PAGE RENDERING FUNCTIONS ---
+    function renderHomeContent() {
+        return `
+            <div class="space-y-8">
+                <div class="bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+                    <h3 class="text-2xl font-bold text-green-700 mb-2">Welcome to the Trichy Accessibility Dashboard</h3>
+                    <p class="text-gray-600 mb-4">
+                        This platform provides real-time accessibility scores and detailed information for bus stops across the Trichy city network.
+                        Use the sidebar to navigate through routes, stops, and the interactive city map.
+                    </p>
+                    <button onclick="navigateTo('routes')" class="px-6 py-3 bg-green-600 text-white font-semibold rounded-lg shadow-md hover:bg-green-700 transition duration-300 flex items-center">
+                        <i data-lucide="bus" class="w-5 h-5 mr-2"></i>
+                        Explore Bus Stop Routes
+                    </button>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div class="bg-white p-5 rounded-xl shadow-md border-l-4 border-blue-500">
+                        <p class="text-sm text-gray-500">Total Stops Surveyed</p>
+                        <p class="text-3xl font-bold text-gray-800 mt-1">${Object.keys(allStopBases).length}</p>
+                    </div>
+                    <div class="bg-white p-5 rounded-xl shadow-md border-l-4 border-yellow-500">
+                        <p class="text-sm text-gray-500">Average Accessibility Score</p>
+                        <p class="text-3xl font-bold text-gray-800 mt-1">${calculateAverageScore().toFixed(2)}/5.0</p>
+                    </div>
+                    <div class="bg-white p-5 rounded-xl shadow-md border-l-4 border-green-500">
+                        <p class="text-sm text-gray-500">Stops with Ramp Access</p>
+                        <p class="text-3xl font-bold text-gray-800 mt-1">${countRampAccess()}</p>
+                    </div>
+                </div>
+                <div class="bg-white p-6 rounded-xl shadow-lg border border-gray-200 flex flex-col md:flex-row items-center justify-between">
+                    <div>
+                        <h3 class="text-xl font-semibold text-gray-800 mb-2">Interactive City Map</h3>
+                        <p class="text-gray-600">View all bus stops on a map, filter by accessibility, and get directions.</p>
+                    </div>
+                    <button onclick="navigateTo('map')" class="mt-4 md:mt-0 px-6 py-3 bg-blue-600 text-white font-semibold rounded-lg shadow-md hover:bg-blue-700 transition duration-300 flex items-center">
+                        <i data-lucide="map-pin" class="w-5 h-5 mr-2"></i>
+                        View Map
+                    </button>
+                </div>
+            </div>
+        `;
+    }
+
+    function renderRoutesContent() {
+        return `
+            <div class="space-y-6">
+                <h3 class="text-2xl font-bold text-gray-800 border-b pb-2">Available Bus Routes</h3>
+                <p class="text-gray-600">Select a route to view its stops, accessibility details, and map visualization.</p>
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    ${allRoutes.map(route => `
+                        <div class="bg-white p-6 rounded-xl shadow-md border border-gray-200 flex flex-col justify-between">
+                            <div>
+                                <h4 class="text-xl font-bold text-green-600 mb-1 flex items-center">
+                                    <i data-lucide="route" class="w-5 h-5 mr-2"></i>
+                                    ${route.name}
+                                </h4>
+                                <p class="text-gray-800 font-semibold">${route.description}</p>
+                                <p class="text-sm text-gray-500 mt-1">Via: ${route.via}</p>
+                                <p class="text-sm text-gray-500 mt-3">${route.stops.length} Stops</p>
+                            </div>
+                            <button onclick="navigateTo('route-detail', '${route.id}')" class="mt-4 w-full px-4 py-2 bg-green-500 text-white font-semibold rounded-lg hover:bg-green-600 transition duration-150">
+                                View Route Details
+                            </button>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+        `;
+    }
+
+    function renderRouteDetailContent(route) {
+        const stopListHtml = route.stops.map((stopName, index) => {
+            const data = allStopBases[stopName];
+            const scoreColor = getScoreColor(data.score);
+            return `
+                <li class="p-4 bg-white rounded-lg shadow-sm flex items-center justify-between stop-link">
+                    <div class="flex items-center">
+                        <span class="text-lg font-bold text-gray-500 mr-4 w-6 text-right">${index + 1}.</span>
+                        <div>
+                            <span class="text-lg font-semibold text-gray-800 stop-name">${stopName}</span>
+                            <p class="text-sm text-gray-500">${data.type}</p>
+                        </div>
+                    </div>
+                    <div class="flex items-center space-x-4">
+                        <div class="flex items-center">
+                            <i data-lucide="star" class="w-4 h-4 mr-1 text-yellow-500 fill-yellow-500"></i>
+                            <span class="font-bold text-${scoreColor}-600">${data.score.toFixed(1)}/5.0</span>
+                        </div>
+                        <button onclick="navigateTo('stop-detail', '${route.id}', '${stopName}')" class="text-sm text-green-600 font-semibold hover:text-green-800 transition duration-150">
+                            Details »
+                        </button>
+                    </div>
+                </li>
+            `;
+        }).join('');
+
+        return `
+            <div class="space-y-6">
+                <button onclick="navigateBack()" class="flex items-center text-green-600 font-semibold hover:text-green-700 transition duration-150">
+                    <i data-lucide="arrow-left" class="w-5 h-5 mr-2"></i>
+                    Back to Routes Overview
+                </button>
+                
+                <div id="route-map-container" class="route-map-container"></div>
+                <h3 class="text-2xl font-bold text-gray-800 border-b pb-2">Stops on Route ${route.name}</h3>
+                <ul class="space-y-4">
+                    ${stopListHtml}
+                </ul>
+            </div>
+        `;
+    }
+
+    function renderMapContent() {
+        return `
+            <div class="space-y-6">
+                <button onclick="navigateBack()" class="flex items-center text-green-600 font-semibold hover:text-green-700 transition duration-150">
+                    <i data-lucide="arrow-left" class="w-5 h-5 mr-2"></i>
+                    Back to Dashboard
+                </button>
+                
+                <h3 class="text-2xl font-bold text-gray-800 border-b pb-2">Interactive City Map</h3>
+                <div class="bg-white p-4 rounded-xl shadow-md">
+                    <p class="text-gray-600 mb-4">Click on any bus stop marker to view its accessibility score and quick links.</p>
+                    <div id="map-container"></div>
+                </div>
+            </div>
+        `;
+    }
+
+    function renderStopDetail(stopName, data, routeId) {
+        if (!data) return `<div class="p-6 text-center text-gray-500">Stop details not found for ${stopName}.</div>`;
+
+        const scoreColor = getScoreColor(data.score);
+
+        return `
+            <div class="space-y-6">
+                <button onclick="navigateBack()" class="flex items-center text-green-600 font-semibold hover:text-green-700 transition duration-150">
+                    <i data-lucide="arrow-left" class="w-5 h-5 mr-2"></i>
+                    Back
+                </button>
+
+                <div class="bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+                    <img src="${data.img}" alt="${stopName} Bus Stop" class="w-full h-auto max-h-96 object-cover rounded-xl mb-6 shadow-md">
+
+                    <h3 class="text-3xl font-bold text-gray-800">${stopName}</h3>
+                    <p class="text-lg text-gray-500 mt-1">${data.type}</p>
+
+                    <div class="flex items-center mt-4">
+                        <span class="text-sm font-semibold mr-2">Accessibility Score:</span>
+                        <span class="px-3 py-1 rounded-full bg-${scoreColor}-100 text-${scoreColor}-700 font-bold text-xl">${data.score.toFixed(1)}/5.0</span>
+                    </div>
+
+                    <div class="mt-6 border-t pt-4">
+                        <h4 class="text-xl font-semibold text-gray-800 mb-3">Key Accessibility Features</h4>
+                        <div class="grid grid-cols-2 gap-4">
+                            ${renderFeature('Ramp Access', data.ramp)}
+                            ${renderFeature('Shelter', data.shelter)}
+                            ${renderFeature('Seating', data.seating)}
+                            ${renderFeature('Signage', data.signage)}
+                        </div>
+                    </div>
+
+                    <div class="mt-8 border-t pt-4 flex justify-end">
+                        <button onclick="openExternalMap('${stopName}')" class="flex items-center px-4 py-2 bg-blue-500 text-white font-semibold rounded-lg hover:bg-blue-600 transition duration-150">
+                            <i data-lucide="map" class="w-5 h-5 mr-2"></i>
+                            View on Google Maps
+                        </button>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    function renderFeature(name, hasFeature) {
+        const icon = hasFeature ? 'check-circle' : 'x-octagon';
+        const color = hasFeature ? 'text-green-600' : 'text-red-500';
+        const bgColor = hasFeature ? 'bg-green-50' : 'bg-red-50';
+        
+        return `
+            <div class="flex items-center ${bgColor} p-3 rounded-lg">
+                <i data-lucide="${icon}" class="w-5 h-5 mr-3 ${color}"></i>
+                <span class="text-gray-700">${name}</span>
+            </div>
+        `;
+    }
+
+    // --- MAP FUNCTIONS ---
+
+    function getScoreColor(score) {
+        if (score >= 4.5) return 'green';
+        if (score >= 3.5) return 'yellow';
+        if (score >= 2.5) return 'orange';
+        return 'red';
+    }
+
+    function initializeMap(container, centerCoords = null, zoom = 13, route = null, sourcePage = 'routes') {
+        let mapId = route ? 'route-map-container' : 'map-container';
+        const mapEl = container.querySelector(`#${mapId}`);
+        
+        if (!mapEl) {
+            console.error(`Map container #${mapId} not found.`);
+            return;
+        }
+
+        if (mapInstance) {
+            mapInstance.remove();
+        }
+
+        const defaultCenter = [10.803263, 78.692117]; // Center of Trichy (Melapudur)
+        const mapCenter = centerCoords || defaultCenter;
+        let mapZoom = zoom;
+
+        mapInstance = L.map(mapId).setView(mapCenter, mapZoom);
+        mapReturnPage = sourcePage;
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        }).addTo(mapInstance);
+
+        if (route) {
+            // ROUTE DETAIL VIEW: Plot only the stops on the specified route
+            const routeCoordinates = [];
+            
+            route.stops.forEach((stopName, i) => {
+                const coords = stopCoordinates[stopName];
+                const data = allStopBases[stopName];
+                
+                if (coords && data) {
+                    routeCoordinates.push([coords.lat, coords.lon]);
+                    const scoreColor = getScoreColor(data.score);
+                    
+                    const markerColor = scoreColor === 'green' ? 'green' : scoreColor === 'yellow' ? 'orange' : 'red';
+                    
+                    const customIcon = L.divIcon({
+                        className: `custom-div-icon bg-${markerColor}-500 text-white rounded-full flex items-center justify-center p-1 font-bold shadow-lg`,
+                        html: `<i data-lucide="bus" class="w-4 h-4"></i>`,
+                        iconSize: [30, 30],
+                        iconAnchor: [15, 15]
+                    });
+
+                    const marker = L.marker([coords.lat, coords.lon], { icon: customIcon }).addTo(mapInstance);
+
+                    // MODIFICATION FOR ROUTE DETAIL VIEW: Add image to popup
+                    const popupContent = `
+                        <img src="${data.img}" alt="${stopName} Bus Stop" class="w-full h-24 object-cover rounded-md mb-2">
+                        <div class="font-bold text-gray-800">${stopName}</div>
+                        <div class="text-sm text-gray-600 mt-1">Score: <span class="font-bold text-${scoreColor}-600">${data.score.toFixed(1)}/5.0</span></div>
+                        <div class="text-sm mt-2">Route ${route.name} stop #${i + 1}</div>
+                        <div class="text-sm text-green-600 mt-2 cursor-pointer font-semibold" onclick="navigateTo('stop-detail', '${route.id}', '${stopName}')">View Details »</div>
+                    `;
+                    
+                    marker.bindPopup(popupContent);
+                    lucide.createIcons(); // Re-render Lucide icons inside popup if needed
+                }
+            });
+
+            // Draw Polyline for the route
+            if (routeCoordinates.length > 1) {
+                L.polyline(routeCoordinates, { color: '#10b981', weight: 4, opacity: 0.7 }).addTo(mapInstance);
+                // Fit map to the route bounds
+                mapInstance.fitBounds(L.latLngBounds(routeCoordinates), { padding: [50, 50] });
+            } else {
+                mapInstance.setView(defaultCenter, mapZoom);
+            }
+        
+        } else {
+            // CITY MAP VIEW: Plot all stops
+            Object.keys(allStopBases).forEach(stopName => {
+                const coords = stopCoordinates[stopName];
+                const data = allStopBases[stopName];
+
+                if (coords && data) {
+                    const scoreColor = getScoreColor(data.score);
+                    
+                    const markerColor = scoreColor === 'green' ? 'green' : scoreColor === 'yellow' ? 'orange' : 'red';
+                    
+                    const customIcon = L.divIcon({
+                        className: `custom-div-icon bg-${markerColor}-500 text-white rounded-full flex items-center justify-center p-1 font-bold shadow-lg`,
+                        html: `<i data-lucide="map-pin" class="w-4 h-4"></i>`,
+                        iconSize: [30, 30],
+                        iconAnchor: [15, 15]
+                    });
+
+                    const marker = L.marker([coords.lat, coords.lon], { icon: customIcon }).addTo(mapInstance);
+
+                    // MODIFICATION FOR CITY MAP VIEW: Add image and 'View Details' link
+                    const popupContent = `
+                        <img src="${data.img}" alt="${stopName} Bus Stop" class="w-full h-24 object-cover rounded-md mb-2">
+                        <div class="font-bold text-gray-800">${stopName}</div>
+                        <div class="text-sm text-gray-600 mt-1">Score: <span class="font-bold text-${scoreColor}-600">${data.score.toFixed(1)}/5.0</span></div>
+                        <div class="text-sm text-green-600 mt-2 cursor-pointer font-semibold" onclick="navigateTo('stop-detail', null, '${stopName}')">View Details »</div>
+                        <div class="text-sm text-blue-500 mt-2 cursor-pointer" onclick="openExternalMap('${stopName}')">View on Google Maps »</div>
+                    `;
+                    
+                    marker.bindPopup(popupContent);
+                    lucide.createIcons(); // Re-render Lucide icons inside popup if needed
+                    
+                    marker.on('click', (e) => {
+                        mapInstance.setView(e.latlng, 15); // Pan and zoom on click
+                    });
+                }
+            });
+            mapInstance.setView(defaultCenter, mapZoom);
+        }
+    }
+    
+    // Function to open Google Maps link
+    function openExternalMap(stopName) {
+        const coords = stopCoordinates[stopName];
+        if (coords) {
+            const url = `https://www.google.com/maps/search/?api=1&query=${coords.lat},${coords.lon}`;
+            window.open(url, '_blank');
+        } else {
+            alertBox(`Coordinates for ${stopName} are not available.`);
+        }
+    }
+
+
+    // --- CALCULATION UTILITIES ---
+
+    function calculateAverageScore() {
+        const scores = Object.values(allStopBases).map(stop => stop.score);
+        const sum = scores.reduce((a, b) => a + b, 0);
+        return sum / scores.length;
+    }
+
+    function countRampAccess() {
+        return Object.values(allStopBases).filter(stop => stop.ramp).length;
+    }
+
+
+    // --- INITIALIZATION ---
+
+    window.onload = () => {
+        // Initial navigation should not save history (false), as there is no page to go back to.
+        navigateTo('home', null, null, false); 
+    };
+</script>
+
+</body>
+</html>
